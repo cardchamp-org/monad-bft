@@ -10,7 +10,7 @@ on:
       builder_image:
         description: "Builder container image"
         type: string
-        default: "peach10.devcore4.com/category-labs/builder"
+        default: "docker.io/mr8c3/builder:latest"
       skip_cmake:
         description: "Skip cmake hugetlbfs/Boost check"
         type: boolean
@@ -29,18 +29,22 @@ jobs:
     runs-on: self-hosted
     container:
       image: ${{ inputs.builder_image }}
-      options: --privileged
+      options: --privileged --user 0:0
     continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Create dummy crate
+      - name: Create dummy crate (no YAML pitfalls)
+        shell: bash
         run: |
           set -euo pipefail
           rm -rf toolchain-smoketest
           mkdir -p toolchain-smoketest/{src,csrc,cxxsrc}
+
+          # Cargo.toml
           cat > toolchain-smoketest/Cargo.toml <<'EOF'
           [package]
           name = "toolchain-smoketest"
@@ -53,6 +57,7 @@ jobs:
           cmake = "0.1"
           EOF
 
+          # src/main.rs
           cat > toolchain-smoketest/src/main.rs <<'EOF'
           extern "C" {
               fn hello_c() -> i32;
@@ -64,62 +69,7 @@ jobs:
           }
           EOF
 
-          cat > toolchain-smoketest/build.rs <<'EOF'
-          use std::{env, fs, path::PathBuf, process::Command};
-          fn main() {
-              println!("cargo:rerun-if-env-changed=SELFTEST_SKIP_CMAKE");
-              println!("cargo:rerun-if-env-changed=CC");
-              println!("cargo:rerun-if-env-changed=CXX");
-              println!("cargo:rerun-if-env-changed=CFLAGS");
-              println!("cargo:rerun-if-env-changed=CXXFLAGS");
-              println!("cargo:rerun-if-env-changed=ASMFLAGS");
-
-              eprintln!("== CC   = {:?}", env::var("CC").ok());
-              eprintln!("== CXX  = {:?}", env::var("CXX").ok());
-              eprintln!("== CFLAGS   = {:?}", env::var("CFLAGS").ok());
-              eprintln!("== CXXFLAGS = {:?}", env::var("CXXFLAGS").ok());
-              eprintln!("== ASMFLAGS = {:?}", env::var("ASMFLAGS").ok());
-
-              let mut c = cc::Build::new();
-              c.file("csrc/hello.c");
-              if let Ok(flags) = env::var("ASMFLAGS") { c.flag(&flags); }
-              c.compile("hello_c");
-
-              let mut cxx = cc::Build::new();
-              cxx.cpp(true).file("cxxsrc/hello.cpp").compile("hello_cpp");
-
-              println!("cargo:rustc-link-lib=hugetlbfs");
-
-              let skip = env::var("SELFTEST_SKIP_CMAKE").ok().filter(|v| v == "1").is_some();
-              if !skip {
-                  let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-                  let cmake_dir = out.join("cmake-smoke");
-                  fs::create_dir_all(&cmake_dir).unwrap();
-                  fs::write(cmake_dir.join("CMakeLists.txt"), r#"
-cmake_minimum_required(VERSION 3.20)
-project(smoke NONE)
-find_library(HUGETLBFS_LIB hugetlbfs)
-if(NOT HUGETLBFS_LIB)
-  message(FATAL_ERROR "hugetlbfs not found")
-endif()
-set(Boost_NO_BOOST_CMAKE OFF)
-find_package(Boost 1.70 COMPONENTS fiber)
-if(NOT Boost_FOUND)
-  set(Boost_NO_BOOST_CMAKE ON)
-  find_package(Boost 1.70 COMPONENTS fiber REQUIRED)
-endif()
-"#).unwrap();
-                  let status = Command::new("cmake")
-                      .arg("-S").arg(&cmake_dir)
-                      .arg("-B").arg(cmake_dir.join("build"))
-                      .status().expect("failed to run cmake");
-                  if !status.success() {
-                      panic!("cmake smoke check failed (hugetlbfs/Boost fiber missing?)");
-                  }
-              }
-          }
-          EOF
-
+          # c files
           cat > toolchain-smoketest/csrc/hello.c <<'EOF'
           int hello_c(void) { return 42; }
           EOF
@@ -128,11 +78,78 @@ endif()
           extern "C" int hello_cpp() { return 7; }
           EOF
 
+          # CMake template written by the shell (avoids raw string in Rust)
+          cat > toolchain-smoketest/CMakeLists.in <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(smoke NONE)
+
+          find_library(HUGETLBFS_LIB hugetlbfs)
+          if(NOT HUGETLBFS_LIB)
+            message(FATAL_ERROR "hugetlbfs not found")
+          endif()
+
+          set(Boost_NO_BOOST_CMAKE OFF)
+          find_package(Boost 1.70 COMPONENTS fiber)
+          if(NOT Boost_FOUND)
+            set(Boost_NO_BOOST_CMAKE ON)
+            find_package(Boost 1.70 COMPONENTS fiber REQUIRED)
+          endif()
+          EOF
+
+          # build.rs that copies CMakeLists.in into OUT_DIR and runs cmake (unless skipped)
+          cat > toolchain-smoketest/build.rs <<'EOF'
+          use std::{env, fs, path::PathBuf, process::Command};
+
+          fn main() {
+              println!("cargo:rerun-if-env-changed=SELFTEST_SKIP_CMAKE");
+              println!("cargo:rerun-if-env-changed=CC");
+              println!("cargo:rerun-if-env-changed=CXX");
+              println!("cargo:rerun-if-env-changed=CFLAGS");
+              println!("cargo:rerun-if-env-changed=CXXFLAGS");
+              println!("cargo:rerun-if-env-changed=ASMFLAGS");
+
+              eprintln!("== CC       = {:?}", env::var("CC").ok());
+              eprintln!("== CXX      = {:?}", env::var("CXX").ok());
+              eprintln!("== CFLAGS   = {:?}", env::var("CFLAGS").ok());
+              eprintln!("== CXXFLAGS = {:?}", env::var("CXXFLAGS").ok());
+              eprintln!("== ASMFLAGS = {:?}", env::var("ASMFLAGS").ok());
+
+              // Build small C object
+              let mut c = cc::Build::new();
+              c.file("csrc/hello.c");
+              if let Ok(flags) = env::var("ASMFLAGS") {
+                  for f in flags.split_whitespace() { c.flag(f); }
+              }
+              c.compile("hello_c");
+
+              // Build small C++ object
+              let mut cxx = cc::Build::new();
+              cxx.cpp(true).file("cxxsrc/hello.cpp").compile("hello_cpp");
+
+              println!("cargo:rustc-link-lib=hugetlbfs");
+
+              let skip = env::var("SELFTEST_SKIP_CMAKE").ok().as_deref() == Some("1");
+              if !skip {
+                  let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+                  let cmake_dir = out.join("cmake-smoke");
+                  fs::create_dir_all(&cmake_dir).unwrap();
+
+                  // copy template created by the workflow
+                  fs::copy("CMakeLists.in", cmake_dir.join("CMakeLists.txt")).unwrap();
+
+                  let status = Command::new("cmake")
+                      .arg("-S").arg(&cmake_dir)
+                      .arg("-B").arg(cmake_dir.join("build"))
+                      .status().expect("failed to run cmake");
+                  assert!(status.success(), "cmake smoke check failed (hugetlbfs/Boost fiber missing?)");
+              }
+          }
+          EOF
+
       - name: Build dummy crate
         working-directory: toolchain-smoketest
         env:
-          # Quote the expression so YAML never mis-parses it
-          SELFTEST_SKIP_CMAKE: "${{ inputs.skip_cmake && '1' || '0' }}"
+          SELFTEST_SKIP_CMAKE: ${{ inputs.skip_cmake && '1' || '0' }}
         run: cargo build -v
 
       - name: Run the binary
