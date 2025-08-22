@@ -34,11 +34,6 @@ env:
 jobs:
   build:
     runs-on: self-hosted
-
-    container:
-      image: peach10.devcore4.com/category-labs/builder
-      options: --privileged
-    continue-on-error: true
     steps:
       - name: Generate a token
         id: generate_token
