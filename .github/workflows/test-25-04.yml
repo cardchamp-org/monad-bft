@@ -33,56 +33,39 @@ jobs:
     continue-on-error: true
 
     steps:
-      # Detect a valid ref to checkout: use input if provided, else prefer 'main' then 'master'
+      # Pick a valid ref: input if provided, else try main then master
       - name: Detect ref to checkout
         id: pickref
         env:
           GH_TOKEN: ${{ github.token }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name || 'monad-bft' }}
-          # fallback repo name if events payload lacks it on workflow_dispatch
+          REPO_FULL: ${{ github.repository }}
+          INPUT_REF: ${{ inputs.ref }}
         shell: bash
         run: |
           set -euo pipefail
-          REPO_FULL="${OWNER}/${REPO}"
-          INPUT_REF="${{ inputs.ref }}"
-
           url="https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
 
           pick_ref() {
-            want="$1"
-            if git ls-remote --exit-code "$url" "$want" >/dev/null 2>&1; then
-              echo "$want"; return 0
-            else
-              return 1
-            fi
+            git ls-remote --exit-code "$url" "$1" >/dev/null 2>&1
           }
 
-          # If user provided a ref (branch/tag/sha), try it first.
-          if [ -n "$INPUT_REF" ]; then
-            if pick_ref "$INPUT_REF"; then
-              echo "ref=$INPUT_REF" >> "$GITHUB_OUTPUT"
-              exit 0
+          if [ -n "${INPUT_REF}" ]; then
+            if pick_ref "${INPUT_REF}"; then
+              echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"; exit 0
             fi
-            # try as branch under refs/heads/
-            if pick_ref "refs/heads/$INPUT_REF"; then
-              echo "ref=refs/heads/$INPUT_REF" >> "$GITHUB_OUTPUT"
-              exit 0
+            if pick_ref "refs/heads/${INPUT_REF}"; then
+              echo "ref=refs/heads/${INPUT_REF}" >> "$GITHUB_OUTPUT"; exit 0
             fi
-            echo "::error::Provided ref '$INPUT_REF' not found in $REPO_FULL"
-            exit 1
+            echo "::error::Provided ref '${INPUT_REF}' not found in ${REPO_FULL}"; exit 1
           fi
 
-          # No input: try common defaults in order
           for CAND in refs/heads/main main refs/heads/master master; do
             if pick_ref "$CAND"; then
-              echo "ref=$CAND" >> "$GITHUB_OUTPUT"
-              exit 0
+              echo "ref=$CAND" >> "$GITHUB_OUTPUT"; exit 0
             fi
           done
 
-          echo "::error::Could not find 'main' or 'master' in $REPO_FULL"
-          exit 1
+          echo "::error::Could not find 'main' or 'master' in ${REPO_FULL}"; exit 1
 
       - uses: actions/checkout@v4
         with:
@@ -133,7 +116,7 @@ jobs:
           extern "C" int hello_cpp() { return 2; }
           EOF
 
-          # build.rs
+          # build.rs (CMake copies hello.c into its scratch dir)
           cat > "$SMOKE_DIR/build.rs" <<'EOF'
           use std::{env, fs, path::PathBuf, process::Command};
           fn main() {
@@ -150,7 +133,7 @@ jobs:
               eprintln!("== CXXFLAGS = {:?}", env::var("CXXFLAGS").ok());
               eprintln!("== ASMFLAGS = {:?}", env::var("ASMFLAGS").ok());
 
-              // C
+              // Build small C object
               let mut c = cc::Build::new();
               c.file("csrc/hello.c");
               if let Ok(flags) = env::var("ASMFLAGS") {
@@ -158,7 +141,7 @@ jobs:
               }
               c.compile("hello_c");
 
-              // C++
+              // Build small C++ object
               let mut cxx = cc::Build::new();
               cxx.cpp(true).file("cxxsrc/hello.cpp").compile("hello_cpp");
 
@@ -170,9 +153,17 @@ jobs:
                   let cmake_dir = out.join("cmake-smoke");
                   fs::create_dir_all(&cmake_dir).unwrap();
 
+                  // copy the C source next to CMakeLists so relative paths work
+                  let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+                  fs::copy(crate_dir.join("csrc/hello.c"), cmake_dir.join("hello.c")).unwrap();
+
                   fs::write(
                       cmake_dir.join("CMakeLists.txt"),
-                      "cmake_minimum_required(VERSION 3.20)\nproject(smoketest C CXX)\nadd_executable(hello ../csrc/hello.c)\n"
+                      r#"
+          cmake_minimum_required(VERSION 3.20)
+          project(smoketest C)
+          add_executable(hello hello.c)
+          "#
                   ).unwrap();
 
                   let status = Command::new("cmake")
