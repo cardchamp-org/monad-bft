@@ -31,21 +31,24 @@ jobs:
       image: ${{ inputs.builder_image }}
       options: --privileged --user 0:0
     continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
-      - name: Create dummy crate & build
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Create dummy crate outside workspace & build
         shell: bash
         env:
-          SELFTEST_SKIP_CMAKE: ${{ inputs.skip_cmake && '1' || '0' }}
+          SELFTEST_SKIP_CMAKE: "${{ inputs.skip_cmake && '1' || '0' }}"
         run: |
           set -euo pipefail
-
-          # workspace
-          rm -rf toolchain-smoketest
-          mkdir -p toolchain-smoketest/{src,csrc,cxxsrc}
+          SMOKE_DIR="${RUNNER_TEMP:-/tmp}/toolchain-smoketest"
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR"/{src,csrc,cxxsrc}
 
           # Cargo.toml
-          cat > toolchain-smoketest/Cargo.toml <<'EOF'
+          cat > "$SMOKE_DIR/Cargo.toml" <<'EOF'
           [package]
           name = "toolchain-smoketest"
           version = "0.1.0"
@@ -58,7 +61,7 @@ jobs:
           EOF
 
           # src/main.rs
-          cat > toolchain-smoketest/src/main.rs <<'EOF'
+          cat > "$SMOKE_DIR/src/main.rs" <<'EOF'
           extern "C" {
               fn hello_c() -> i32;
               fn hello_cpp() -> i32;
@@ -69,20 +72,18 @@ jobs:
           }
           EOF
 
-          # csrc/hello.c
-          cat > toolchain-smoketest/csrc/hello.c <<'EOF'
+          # C / C++
+          cat > "$SMOKE_DIR/csrc/hello.c" <<'EOF'
           int hello_c(void) { return 1; }
           EOF
 
-          # cxxsrc/hello.cpp
-          cat > toolchain-smoketest/cxxsrc/hello.cpp <<'EOF'
+          cat > "$SMOKE_DIR/cxxsrc/hello.cpp" <<'EOF'
           extern "C" int hello_cpp() { return 2; }
           EOF
 
           # build.rs
-          cat > toolchain-smoketest/build.rs <<'EOF'
+          cat > "$SMOKE_DIR/build.rs" <<'EOF'
           use std::{env, fs, path::PathBuf, process::Command};
-
           fn main() {
               println!("cargo:rerun-if-env-changed=SELFTEST_SKIP_CMAKE");
               println!("cargo:rerun-if-env-changed=CC");
@@ -97,7 +98,7 @@ jobs:
               eprintln!("== CXXFLAGS = {:?}", env::var("CXXFLAGS").ok());
               eprintln!("== ASMFLAGS = {:?}", env::var("ASMFLAGS").ok());
 
-              // C
+              // Build small C object
               let mut c = cc::Build::new();
               c.file("csrc/hello.c");
               if let Ok(flags) = env::var("ASMFLAGS") {
@@ -105,7 +106,7 @@ jobs:
               }
               c.compile("hello_c");
 
-              // C++
+              // Build small C++ object
               let mut cxx = cc::Build::new();
               cxx.cpp(true).file("cxxsrc/hello.cpp").compile("hello_cpp");
 
@@ -117,22 +118,27 @@ jobs:
                   let cmake_dir = out.join("cmake-smoke");
                   fs::create_dir_all(&cmake_dir).unwrap();
 
-                  fs::write(cmake_dir.join("CMakeLists.txt"), r#"
-          cmake_minimum_required(VERSION 3.20)
-          project(smoketest C CXX)
-          add_executable(hello ../csrc/hello.c)
-          "#).unwrap();
+                  fs::write(
+                      cmake_dir.join("CMakeLists.txt"),
+                      "cmake_minimum_required(VERSION 3.20)\nproject(smoketest C CXX)\nadd_executable(hello ../csrc/hello.c)\n"
+                  ).unwrap();
 
                   let status = Command::new("cmake")
                       .current_dir(&cmake_dir)
                       .arg("-S").arg(".")
                       .arg("-B").arg("build")
                       .status().unwrap();
-                  assert!(status.success());
+                  assert!(status.success(), "cmake smoke check failed");
               }
           }
           EOF
 
-          # build & run
-          cargo build --manifest-path toolchain-smoketest/Cargo.toml -v
-          cargo run   --manifest-path toolchain-smoketest/Cargo.toml -q
+          # Build & run from the temp manifest (outside workspace)
+          cargo build --manifest-path "$SMOKE_DIR/Cargo.toml" -v
+          cargo run   --manifest-path "$SMOKE_DIR/Cargo.toml" -q
+
+      - name: Show binary output path
+        shell: bash
+        run: |
+          SMOKE_DIR="${RUNNER_TEMP:-/tmp}/toolchain-smoketest"
+          ls -l "$SMOKE_DIR/target/debug/toolchain-smoketest" || true
