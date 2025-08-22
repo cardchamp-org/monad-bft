@@ -32,7 +32,7 @@ jobs:
       options: --privileged --user 0:0
     continue-on-error: true
     steps:
-
+      - uses: actions/checkout@v4
       - name: Create dummy crate & build
         shell: bash
         env:
