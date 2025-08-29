@@ -27,10 +27,10 @@ env:
 jobs:
   smoke:
     runs-on: self-hosted
-    container:
-      image: ${{ inputs.builder_image }}
-      options: --privileged --user 0:0
-    continue-on-error: true
+    #container:
+     # image: ${{ inputs.builder_image }}
+      #options: --privileged --user 0:0
+    #continue-on-error: true
 
     steps:
       # Pick a valid ref: input if provided, else try main then master
