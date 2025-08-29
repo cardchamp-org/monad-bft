@@ -19,9 +19,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   ASMFLAGS: -march=haswell
-  CC: gcc-15
+  CC: gcc        # instead of gcc-15
+  CXX: g++       # instead of g++-15
   CFLAGS: -march=haswell
-  CXX: g++-15
   CXXFLAGS: -march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL
 
 jobs:
