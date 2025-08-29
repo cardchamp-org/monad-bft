@@ -82,6 +82,7 @@ jobs:
         env:
           SELFTEST_SKIP_CMAKE: "${{ inputs.skip_cmake && '1' || '0' }}"
         run: |
+          source ~/.cargo/env  # Add this line at the start
           set -euo pipefail
           SMOKE_DIR="${RUNNER_TEMP:-/tmp}/toolchain-smoketest"
           rm -rf "$SMOKE_DIR"
