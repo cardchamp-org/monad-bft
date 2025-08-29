@@ -82,6 +82,7 @@ jobs:
         env:
           SELFTEST_SKIP_CMAKE: "${{ inputs.skip_cmake && '1' || '0' }}"
         run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source ~/.cargo/env  # Add this line at the start
           set -euo pipefail
           SMOKE_DIR="${RUNNER_TEMP:-/tmp}/toolchain-smoketest"
