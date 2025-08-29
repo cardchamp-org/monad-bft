@@ -72,6 +72,11 @@ jobs:
           ref: ${{ steps.pickref.outputs.ref }}
           fetch-depth: 1
 
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+           
       - name: Create dummy crate outside workspace & build
         shell: bash
         env:
